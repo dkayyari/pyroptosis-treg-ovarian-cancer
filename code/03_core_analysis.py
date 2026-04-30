@@ -1,29 +1,7 @@
 """
-=============================================================
 Script 03: Core Analysis
 Project: Pyroptosis-Treg Axis in Ovarian Cancer
-Author:  Deeksha Kayyari
-Date:    April 2026
-=============================================================
-
-Description:
-    Generates three main result figures:
-      Figure 2 — Kaplan-Meier survival curves (4 patient groups)
-      Figure 3 — CCL22 mechanism heatmap
-      Figure 4 — Immune checkpoint expression boxplot
-
-Inputs:
-    data_clean/ssgsea_scores.csv
-    data_clean/TCGA_expr_clean.csv
-
-Outputs:
-    data_clean/Figure2_KM_survival.png
-    data_clean/Figure3_CCL22_heatmap.png
-    data_clean/Figure4_checkpoints.png
-
-Requirements:
-    pip install pandas numpy matplotlib seaborn scipy lifelines
-=============================================================
+Author:  Deeksha Kayyari | Indiana University | April 2026
 """
 
 import pandas as pd
@@ -48,9 +26,12 @@ except ImportError:
     from lifelines.statistics import logrank_test, multivariate_logrank_test
 
 # =============================================================
-# CONFIGURATION
+# CHANGE THIS PATH to your project folder
 # =============================================================
-DATA_CLEAN = r"C:\Users\deeksha\OneDrive - Indiana University\pyroptosis_treg_project\data_clean"
+PROJECT_ROOT = r"C:\Users\deeksha\Downloads\pyroptosis_project_old"
+# =============================================================
+
+DATA_CLEAN = os.path.join(PROJECT_ROOT, "data_clean")
 
 GROUP_COLORS = {
     "High_Pyro_High_Treg": "#1D9E75",
@@ -65,16 +46,20 @@ GROUP_LABELS = {
     "Low_Pyro_Low_Treg"  : "Low Pyroptosis + Low Treg"
 }
 
-# =============================================================
-# LOAD DATA
-# =============================================================
 print("=" * 60)
 print("SCRIPT 03 — CORE ANALYSIS")
 print("=" * 60)
+
+# Load data
 print("\n[Loading data]")
 
 master_df = pd.read_csv(os.path.join(DATA_CLEAN, "ssgsea_scores.csv"), index_col=0)
-tcga      = pd.read_csv(os.path.join(DATA_CLEAN, "TCGA_expr_clean.csv"), index_col=0)
+
+# Use gene symbol version if available (created by script 02)
+gene_sym_path = os.path.join(DATA_CLEAN, "TCGA_expr_clean_genesymbols.csv")
+expr_path     = os.path.join(DATA_CLEAN, "TCGA_expr_clean.csv")
+tcga = pd.read_csv(gene_sym_path if os.path.exists(gene_sym_path) else expr_path, index_col=0)
+print(f"  Expression: {tcga.shape}")
 
 for col in ["Pyroptosis_score","Treg_score","CCL22_score","OS","OS_time"]:
     if col in master_df.columns:
@@ -83,6 +68,11 @@ for col in ["Pyroptosis_score","Treg_score","CCL22_score","OS","OS_time"]:
 master_df = master_df.dropna(subset=["OS","OS_time","Pyroptosis_score","Treg_score"])
 master_df = master_df[master_df["OS_time"] > 0]
 
+# Keep only samples present in both files
+common_samples = list(set(tcga.columns) & set(master_df.index))
+master_df      = master_df.loc[master_df.index.isin(common_samples)]
+print(f"  Common samples: {len(common_samples)}")
+
 if "Combined_group" not in master_df.columns:
     pm = master_df["Pyroptosis_score"].median()
     tm = master_df["Treg_score"].median()
@@ -90,29 +80,23 @@ if "Combined_group" not in master_df.columns:
     master_df["Treg_group"]     = master_df["Treg_score"].apply(lambda x:"High_Treg" if x>tm else "Low_Treg")
     master_df["Combined_group"] = master_df["Pyro_group"] + "_" + master_df["Treg_group"]
 
-common_samples = list(set(tcga.columns) & set(master_df.index))
 print(f"  Patients: {len(master_df)},  Deaths: {int(master_df['OS'].sum())}")
 print(f"  Groups:\n{master_df['Combined_group'].value_counts()}")
 
-# =============================================================
-# FIGURE 2 — Kaplan-Meier Survival Curves
-# =============================================================
+# FIGURE 2 — KM Survival
 print("\n[FIGURE 2] Kaplan-Meier Survival Curves")
-
 fig, ax = plt.subplots(figsize=(10, 7))
 kmf = KaplanMeierFitter()
-
 for group, color in GROUP_COLORS.items():
     subset = master_df[master_df["Combined_group"] == group]
-    if len(subset) == 0:
-        continue
+    if len(subset) == 0: continue
     kmf.fit(durations=subset["OS_time"]/365, event_observed=subset["OS"],
             label=f"{GROUP_LABELS[group]} (n={len(subset)})")
     kmf.plot_survival_function(ax=ax, color=color, linewidth=2, ci_show=True, ci_alpha=0.08)
 
 results   = multivariate_logrank_test(master_df["OS_time"], master_df["Combined_group"], master_df["OS"])
 p_logrank = results.p_value
-print(f"  Log-rank p = {p_logrank:.4f}  {'✓ Significant' if p_logrank < 0.05 else '✗ Not significant'}")
+print(f"  Log-rank p = {p_logrank:.4f}")
 
 ax.set_xlabel("Time (years)", fontsize=13)
 ax.set_ylabel("Overall survival probability", fontsize=13)
@@ -125,22 +109,8 @@ plt.savefig(os.path.join(DATA_CLEAN, "Figure2_KM_survival.png"), dpi=150, bbox_i
 plt.close()
 print("  Saved: Figure2_KM_survival.png")
 
-# Pairwise log-rank tests
-groups_list = list(GROUP_COLORS.keys())
-print("  Pairwise comparisons:")
-for i in range(len(groups_list)):
-    for j in range(i+1, len(groups_list)):
-        g1 = master_df[master_df["Combined_group"] == groups_list[i]]
-        g2 = master_df[master_df["Combined_group"] == groups_list[j]]
-        if len(g1) > 0 and len(g2) > 0:
-            result = logrank_test(g1["OS_time"], g2["OS_time"], g1["OS"], g2["OS"])
-            print(f"    {groups_list[i][:18]} vs {groups_list[j][:18]}: p = {result.p_value:.4f}")
-
-# =============================================================
-# FIGURE 3 — CCL22 Mechanism Heatmap
-# =============================================================
+# FIGURE 3 — CCL22 Heatmap
 print("\n[FIGURE 3] CCL22 Mechanism Heatmap")
-
 EXECUTOR_GENES  = [g for g in ["GSDMD","CASP1","IL1B","IL18","NLRP3","AIM2"] if g in tcga.index]
 RECRUITER_GENES = [g for g in ["CCL22","CCL17","CCR8","IL33","TGFB1","FOXP3"] if g in tcga.index]
 
@@ -157,12 +127,6 @@ for eg in EXECUTOR_GENES:
         stars = "***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else ""
         annot.loc[eg, rg] = f"{r:.2f}{stars}"
 
-print("  Key correlations:")
-for eg in ["CASP1","IL1B"]:
-    for rg in ["CCL22","FOXP3"]:
-        if eg in EXECUTOR_GENES and rg in RECRUITER_GENES:
-            print(f"    {eg} vs {rg}: r={corr_matrix.loc[eg,rg]:.3f}  p={pval_matrix.loc[eg,rg]:.4f}")
-
 fig, ax = plt.subplots(figsize=(9, 5))
 sns.heatmap(corr_matrix.astype(float), annot=annot, fmt="",
             cmap="RdYlGn", center=0, vmin=-0.5, vmax=0.5,
@@ -178,19 +142,15 @@ plt.savefig(os.path.join(DATA_CLEAN, "Figure3_CCL22_heatmap.png"), dpi=150, bbox
 plt.close()
 print("  Saved: Figure3_CCL22_heatmap.png")
 
-# =============================================================
-# FIGURE 4 — Immune Checkpoint Boxplot
-# =============================================================
+# FIGURE 4 — Checkpoints
 print("\n[FIGURE 4] Immune Checkpoint Boxplot")
-
 CHECKPOINT_GENES = {"CD274":"PD-L1","PDCD1":"PD-1","CTLA4":"CTLA-4","HAVCR2":"TIM-3","LAG3":"LAG-3","TIGIT":"TIGIT"}
 checkpoint_genes = [g for g in CHECKPOINT_GENES if g in tcga.index]
 checkpoint_expr  = tcga.loc[checkpoint_genes, common_samples].T.astype(float)
 
-print("  Kruskal-Wallis test (4-group differences):")
 kw_results  = {}
 group_order = list(GROUP_COLORS.keys())
-
+print("  Kruskal-Wallis test:")
 for gene in checkpoint_genes:
     groups_data = [
         checkpoint_expr.loc[master_df[master_df["Combined_group"]==g].index, gene].dropna().values
@@ -205,10 +165,9 @@ for gene in checkpoint_genes:
 fig, axes = plt.subplots(2, 3, figsize=(15, 9))
 fig.suptitle("Immune checkpoint expression by pyroptosis-Treg group\nTCGA-OV", fontsize=13, fontweight="bold")
 axes = axes.flatten()
-
 for idx, gene in enumerate(checkpoint_genes):
-    ax    = axes[idx]
-    p_kw  = kw_results.get(gene, 1.0)
+    ax   = axes[idx]
+    p_kw = kw_results.get(gene, 1.0)
     plot_data = [
         checkpoint_expr.loc[checkpoint_expr.index.isin(master_df[master_df["Combined_group"]==g].index), gene].dropna().values
         for g in group_order
@@ -229,15 +188,10 @@ plt.savefig(os.path.join(DATA_CLEAN, "Figure4_checkpoints.png"), dpi=150, bbox_i
 plt.close()
 print("  Saved: Figure4_checkpoints.png")
 
-# =============================================================
-# FINAL SUMMARY
-# =============================================================
-print("\n" + "=" * 60)
-print("SCRIPT 03 COMPLETE — SUMMARY")
-print("=" * 60)
-print(f"  Figure 2 — KM: log-rank p = {p_logrank:.4f}  {'✓' if p_logrank<0.05 else '✗'}")
+print("\n" + "="*60)
+print("SCRIPT 03 COMPLETE")
+print(f"  KM log-rank p = {p_logrank:.4f}")
 sig_ck = [CHECKPOINT_GENES.get(g,g) for g,p in kw_results.items() if p<0.05]
-print(f"  Figure 4 — Significant checkpoints: {sig_ck}")
-print(f"\n  Outputs: {DATA_CLEAN}")
-print(f"  NEXT: Run 04_drug_sensitivity.py")
-print("=" * 60)
+print(f"  Significant checkpoints: {sig_ck}")
+print(f"  Outputs: {DATA_CLEAN}")
+print("="*60)
